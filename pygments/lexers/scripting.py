@@ -1705,6 +1705,25 @@ _SYMBOL = _SYMBOL_START + _SYMBOL_CHAR + r"*"
 # _SYMBOL_START excludes digits, confirmed by the same real-world test
 # file above (D:\utility\rxwhois.cmd's "UTF.8:" label).
 _COMPOUND_SYMBOL = _SYMBOL + r"(?:\.(?:" + _SYMBOL + r"|[0-9]+))*"
+# A hex or binary string's body, as ooRexx 5.2 accepts it (checked case
+# by case): groups of digits separated by blanks or tabs, none leading or
+# trailing; the first group of any length, each later group whole bytes
+# (an even number of hex digits) or whole nibbles (a multiple of four
+# binary digits). The empty string is valid.
+_OOREXX_HEX_BODY = re.compile(r"(?:[0-9a-f]+(?:[ \t]+(?:[0-9a-f]{2})+)*)?",
+                              re.IGNORECASE)
+_OOREXX_BINARY_BODY = re.compile(r"(?:[01]+(?:[ \t]+(?:[01]{4})+)*)?")
+
+
+def _oorexx_radix_string(lexer, match):
+    """Tokens for a hex or binary string: the quoted body, as
+    String.Other when well formed and as Error when ooRexx would reject
+    it (Error 15), then the suffix as String.Affix."""
+    literal, suffix = match.group(1), match.group(2)
+    body = _OOREXX_HEX_BODY if suffix.lower() == "x" else _OOREXX_BINARY_BODY
+    token = String.Other if body.fullmatch(literal[1:-1]) else Error
+    yield match.start(1), token, literal
+    yield match.start(2), String.Affix, suffix
 
 
 class OORexxLexer(RegexLexer):
@@ -1752,6 +1771,11 @@ class OORexxLexer(RegexLexer):
             # "operator" include below, so the second "-" doesn't win
             # the single-hyphen operator rule first.
             (r"--.*", Comment.Single),
+            # Hex and binary strings ('0A'x, '0110 0001'b): the suffix
+            # must not run into a further symbol character, or it starts
+            # a symbol abutted to the string instead ('61'xyz)
+            (r"(\"(?:[^\"\n]|\"\")*\"|'(?:[^'\n]|'')*')([xb])(?![\w@#$!?.])",
+             _oorexx_radix_string),
             (r'"', String, "string_double"),
             (r"'", String, "string_single"),
             (r"[0-9]+(\.[0-9]+)?(e[+-]?[0-9])?", Number),
@@ -1795,6 +1819,11 @@ class OORexxLexer(RegexLexer):
                 bygroups(Keyword.Namespace, Whitespace, Keyword.Declaration),
                 "options_body",
             ),
+            # Any other "::" is an unknown directive (::badname, or a bare
+            # "::"): one Error token for the whole thing, rather than one
+            # per colon with the name falling through as plain Text. Must
+            # follow the known-directive rules above.
+            (r"::(?:[ \t]*" + _SYMBOL + r")?", Error),
             # Dot-prefixed environment-directory symbol lookups: .array,
             # .string, .true, .false, .nil, .MyClass, etc. The dot means
             # "look this up in the environment directory", not "this is
